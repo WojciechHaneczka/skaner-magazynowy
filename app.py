@@ -5,7 +5,7 @@ app = Flask(__name__)
 codes = []
 first_seen = {}
 
-HTML = """<!doctype html>
+HTML = r"""<!doctype html>
 <html lang="pl">
 <head>
 <meta charset="utf-8">
@@ -51,6 +51,7 @@ h1{margin-bottom:6px}
   <button class="change" onclick="changeDevice()">Zmień nazwę skanera</button>
 </div>
 
+<div class="box"><button type="button" onclick="playDuplicateSiren();inp.focus()">Test głośnej syreny (3 sekundy)</button><p>Ustaw głośność multimediów skanera na maksimum.</p></div>
 <div id="status">GOTOWY DO SKANOWANIA</div>
 
 <div class="grid">
@@ -122,13 +123,45 @@ function changeDevice(){
   document.getElementById('deviceOverlay').style.display='flex';
   setTimeout(()=>document.getElementById('deviceInput').focus(),100);
 }
-function beep(f,d){
+let audioContext, activeSiren;
+function unlockAudio(){
   try{
-    let c=new(AudioContext||webkitAudioContext)(),o=c.createOscillator();
-    o.frequency.value=f;o.connect(c.destination);o.start();
-    setTimeout(()=>{o.stop();c.close()},d)
+    const A=window.AudioContext||window.webkitAudioContext;
+    if(!A)return null;
+    if(!audioContext||audioContext.state==='closed')audioContext=new A();
+    if(audioContext.state==='suspended')audioContext.resume().catch(()=>{});
+    return audioContext;
+  }catch(e){return null;}
+}
+document.addEventListener('pointerdown',unlockAudio,true);
+document.addEventListener('keydown',unlockAudio,true);
+function sound(siren,f=1000,d=0.1){
+  const c=unlockAudio();
+  if(!c||(!siren&&activeSiren))return;
+  try{
+    if(siren&&activeSiren){try{activeSiren.stop();}catch(e){}}
+    const o=c.createOscillator(),g=c.createGain(),t=c.currentTime;
+    if(siren){
+      d=3;o.type='sawtooth';
+      for(let i=0;i<6;i++){
+        o.frequency.setValueAtTime(650,t+i*0.5);
+        o.frequency.linearRampToValueAtTime(1550,t+i*0.5+0.25);
+        o.frequency.linearRampToValueAtTime(650,t+(i+1)*0.5);
+      }
+      activeSiren=o;
+    }else{o.frequency.value=f;}
+    const volume=siren?1:0.25;
+    g.gain.setValueAtTime(0,t);
+    g.gain.linearRampToValueAtTime(volume,t+0.005);
+    g.gain.setValueAtTime(volume,t+d-0.01);
+    g.gain.linearRampToValueAtTime(0,t+d);
+    o.connect(g);g.connect(c.destination);
+    o.onended=()=>{o.disconnect();g.disconnect();if(activeSiren===o)activeSiren=null;};
+    o.start(t);o.stop(t+d);
   }catch(e){}
 }
+function beep(f,d){sound(false,f,d/1000);}
+function playDuplicateSiren(){sound(true);}
 async function scan(code){
   if(!deviceName){ensureDevice();return}
   let r=await fetch('/scan',{
@@ -142,8 +175,7 @@ async function scan(code){
     st.innerHTML='DUPLIKAT!<br>'+code+
       '<div style="font-size:15px;margin-top:8px">Pierwszy skan: '+x.first_device+
       ' | '+x.first_time+'</div>';
-    beep(180,600);
-    setTimeout(()=>beep(140,500),220);
+    playDuplicateSiren();
     if(navigator.vibrate)navigator.vibrate([300,100,300,100,500]);
   }else{
     st.innerHTML='OK ✓<br>'+code;
@@ -153,7 +185,7 @@ async function scan(code){
     st.className='';
     st.textContent='GOTOWY DO SKANOWANIA';
     inp.focus();
-  },x.duplicate?2600:800);
+  },x.duplicate?3200:800);
   refresh();
 }
 inp.addEventListener('keydown',e=>{
