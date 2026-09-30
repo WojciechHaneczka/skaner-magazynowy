@@ -1,3 +1,35 @@
+import os, sqlite3, csv, io
+from datetime import datetime, time
+from contextlib import contextmanager
+from flask import Flask, request, jsonify, render_template_string, Response
+
+app = Flask(__name__)
+DB_PATH = os.environ.get('SCANNER_DB_PATH') or '/tmp/scanner.db'
+
+
+def now_local():
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo('Europe/Warsaw'))
+    except Exception:
+        return datetime.now()
+
+
+def stamp(dt=None):
+    return (dt or now_local()).strftime('%Y-%m-%d %H:%M:%S')
+
+
+def work_date():
+    return now_local().date().isoformat()
+
+
+@contextmanager
+def db():
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    conn.execute('PRAGMA foreign_keys=ON')
+    try:
+        yield conn
         conn.commit()
     finally:
         conn.close()
@@ -190,35 +222,9 @@ def export_csv():
     d=request.args.get('date') or work_date()
     with db() as c: rows=c.execute('SELECT * FROM scans WHERE work_date=? ORDER BY id',(d,)).fetchall()
     out=io.StringIO(); w=csv.writer(out,delimiter=';'); w.writerow(['Data','Godzina','Paleta','Kod EAN','Operator/Skaner','Status'])
-            with db() as c:
-        rows=c.execute('SELECT * FROM pallets WHERE work_date=? ORDER BY pallet_no',(d,)).fetchall(); return jsonify(date=d,pallets=[{'id':p['id'],'pallet_no':p['pallet_no'],'status':p['status'],'cartons':pallet_count(c,p['id'])} for p in rows])
+    for x in rows: w.writerow([x['work_date'],x['scanned_at'].split(' ',1)[1],x['pallet_no'],x['code'],x['device'],'DUPLIKAT' if x['is_duplicate'] else 'OK'])
+    return Response('\ufeff'+out.getvalue(),mimetype='text/csv; charset=utf-8',headers={'Content-Disposition':f'attachment; filename="skaner_{d}.csv"'})
 
 
-@app.get('/api/pallet/<int:pid>')
-def pallet_detail(pid):
-    with db() as c:
-        p=c.execute('SELECT * FROM pallets WHERE id=?',(pid,)).fetchone()
-        if not p: return jsonify(error='Nie znaleziono palety'),404
-        s=c.execute('SELECT * FROM scans WHERE pallet_id=? ORDER BY id',(pid,)).fetchall(); return jsonify(pallet={'id':p['id'],'pallet_no':p['pallet_no'],'status':p['status'],'cartons':pallet_count(c,pid)},scans=[{'time':x['scanned_at'].split(' ',1)[1],'code':x['code'],'device':x['device'],'duplicate':bool(x['is_duplicate'])} for x in s])
-
-
-@app.get('/api/days')
-def days():
-    with db() as c:
-        dates=[x['work_date'] for x in c.execute('SELECT work_date FROM pallets UNION SELECT work_date FROM scans ORDER BY work_date DESC').fetchall()]; out=[]
-        for d in dates:
-            r=report(c,d); out.append({'date':d,'unique':r['unique'],'pallets':r['pallets']['total'],'duplicates':r['duplicates'],'total':r['total_scans']})
-        return jsonify(days=out)
-
-
-@app.get('/api/report')
-def report_api():
-    d=request.args.get('date') or work_date()
-    with db() as c: return jsonify(report(c,d))
-
-
-@app.get('/api/export.csv')
-def export_csv():
-    d=request.args.get('date') or work_date()
-    with db() as c: rows=c.execute('SELECT * FROM scans WHERE work_date=? ORDER BY id',(d,)).fetchall()
-    out=io.StringIO(); w=csv.writer(out,delimiter=';'); w.writerow(['Data','Godzina','Paleta','Kod EAN','Operator/Skaner','Status'])
+if __name__=='__main__':
+    app.run(host='0.0.0.0',port=int(os.environ.get('PORT','10000')))
